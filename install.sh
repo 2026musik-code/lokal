@@ -19,9 +19,11 @@ XRAY_CONFIG="$CONF_DIR/config.json"
 XRAY_BIN="$BIN_DIR/xray"
 CF_BIN="$BIN_DIR/cloudflared"
 
-# Log Files
+# Log & PID Files
 LOG_XRAY="$LOG_DIR/xray.log"
 LOG_CF="$LOG_DIR/cloudflared.log"
+PID_XRAY="$LOG_DIR/xray.pid"
+PID_CF="$LOG_DIR/cloudflared.pid"
 
 # URL Repo untuk Update
 REPO_URL="https://raw.githubusercontent.com/2026musik-code/lokal/main/install.sh"
@@ -44,9 +46,10 @@ header() {
 check_dependencies() {
     if [ -z "$DEPS_CHECKED" ]; then
         echo -e "${YELLOW}[*] Mengecek dependencies...${NC}"
-        packages=("curl" "wget" "zip" "jq" "openssl" "util-linux")
+        # Tambahkan procps untuk pgrep/pkill
+        packages=("curl" "wget" "zip" "jq" "openssl" "util-linux" "procps")
         for pkg in "${packages[@]}"; do
-            if ! command -v "$pkg" &> /dev/null; then
+            if ! command -v "$pkg" &> /dev/null && ! pkg list-installed "$pkg" &> /dev/null; then
                 echo -e "${RED}[!] $pkg belum terinstall. Menginstall...${NC}"
                 pkg install "$pkg" -y
             fi
@@ -69,7 +72,7 @@ install_binaries() {
 
     # Cek Xray: Hanya download jika file tidak ada atau tidak executable
     if [ -f "$XRAY_BIN" ] && [ -x "$XRAY_BIN" ]; then
-        echo -e "${GREEN}[+] Xray sudah terinstall. Melewati unduhan.${NC}"
+        echo -e "${GREEN}[+] Xray ditemukan di $XRAY_BIN. Melewati unduhan.${NC}"
     else
         echo -e "${YELLOW}[*] Mencari versi terbaru Xray-Core...${NC}"
         LATEST_XRAY_TAG=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
@@ -92,7 +95,7 @@ install_binaries() {
 
     # Cek Cloudflared
     if [ -f "$CF_BIN" ] && [ -x "$CF_BIN" ]; then
-        echo -e "${GREEN}[+] Cloudflared sudah terinstall. Melewati unduhan.${NC}"
+        echo -e "${GREEN}[+] Cloudflared ditemukan di $CF_BIN. Melewati unduhan.${NC}"
     else
         echo -e "${YELLOW}[*] Mendownload Cloudflared...${NC}"
         wget -q --show-progress "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" -O "$CF_BIN"
@@ -169,29 +172,50 @@ EOF
     fi
 }
 
+# Helper Check Process
+is_running() {
+    local pid_file=$1
+    local name=$2
+    if [ -f "$pid_file" ]; then
+        local pid=$(cat "$pid_file")
+        if ps -p "$pid" > /dev/null; then
+            return 0
+        fi
+    fi
+    # Fallback to pgrep if PID file fails but process exists
+    if pgrep -f "$name" > /dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 # Start Tunnel
 start_tunnel() {
     source "$USER_DATA"
 
-    # Cek apakah sudah jalan
-    if pgrep -f "$XRAY_BIN" > /dev/null; then
+    # Cek Xray
+    if is_running "$PID_XRAY" "xray"; then
         echo -e "${RED}[!] Xray sudah berjalan.${NC}"
     else
         echo -e "${YELLOW}[*] Menjalankan Xray...${NC}"
-        # Jalankan dari folder bin untuk memastikan path ./xray benar jika ada dependensi lokal,
-        # tapi config ada di folder conf. Gunakan path absolut untuk amannya.
+        cd "$BIN_DIR" || exit
+        nohup ./xray run -c "$XRAY_CONFIG" > "$LOG_XRAY" 2>&1 &
+        echo $! > "$PID_XRAY"
 
-        # Redirect output ke file log
-        # Pastikan menggunakan path absolut ke binary dan config
-        nohup "$XRAY_BIN" run -c "$XRAY_CONFIG" > "$LOG_XRAY" 2>&1 &
+        sleep 1
+        if ! is_running "$PID_XRAY" "xray"; then
+            echo -e "${RED}[!] Gagal menjalankan Xray. Cek log error.${NC}"
+        fi
     fi
 
-    if pgrep -f "$CF_BIN" > /dev/null; then
+    # Cek Cloudflared
+    if is_running "$PID_CF" "cloudflared"; then
          echo -e "${RED}[!] Cloudflared sudah berjalan.${NC}"
     else
         echo -e "${YELLOW}[*] Menjalankan Cloudflared...${NC}"
-        # Redirect output ke file log
-        nohup "$CF_BIN" tunnel run --token "$TOKEN" > "$LOG_CF" 2>&1 &
+        cd "$BIN_DIR" || exit
+        nohup ./cloudflared tunnel run --token "$TOKEN" > "$LOG_CF" 2>&1 &
+        echo $! > "$PID_CF"
     fi
 
     sleep 2
@@ -202,8 +226,21 @@ start_tunnel() {
 # Stop Tunnel
 stop_tunnel() {
     echo -e "${YELLOW}[*] Menghentikan proses...${NC}"
-    pkill -f "$XRAY_BIN"
-    pkill -f "$CF_BIN"
+
+    if [ -f "$PID_XRAY" ]; then
+        kill $(cat "$PID_XRAY") 2>/dev/null
+        rm "$PID_XRAY"
+    else
+        pkill -f "xray"
+    fi
+
+    if [ -f "$PID_CF" ]; then
+        kill $(cat "$PID_CF") 2>/dev/null
+        rm "$PID_CF"
+    else
+        pkill -f "cloudflared"
+    fi
+
     echo -e "${GREEN}[+] Semua proses dimatikan.${NC}"
     read -p "Tekan Enter untuk kembali ke menu..."
 }
@@ -279,13 +316,13 @@ while true; do
     source "$USER_DATA"
 
     # Cek Status
-    if pgrep -f "$XRAY_BIN" > /dev/null; then
+    if is_running "$PID_XRAY" "xray"; then
         XRAY_STATUS="${GREEN}ON${NC}"
     else
         XRAY_STATUS="${RED}OFF${NC}"
     fi
 
-    if pgrep -f "$CF_BIN" > /dev/null; then
+    if is_running "$PID_CF" "cloudflared"; then
         CF_STATUS="${GREEN}ON${NC}"
     else
         CF_STATUS="${RED}OFF${NC}"
