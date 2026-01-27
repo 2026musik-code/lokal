@@ -13,6 +13,13 @@ XRAY_CONFIG="$WORKDIR/config.json"
 XRAY_BIN="$WORKDIR/xray"
 CF_BIN="$WORKDIR/cloudflared"
 
+# Log Files
+LOG_XRAY="$WORKDIR/xray.log"
+LOG_CF="$WORKDIR/cloudflared.log"
+
+# URL Repo untuk Update (Ganti dengan URL raw file yang asli)
+REPO_URL="https://raw.githubusercontent.com/username/repo/main/installer.sh"
+
 # Fungsi Header
 header() {
     clear
@@ -157,15 +164,16 @@ start_tunnel() {
     else
         echo -e "${YELLOW}[*] Menjalankan Xray...${NC}"
         cd "$WORKDIR" || exit
-        nohup ./xray run -c config.json > /dev/null 2>&1 &
+        # Redirect output ke file log
+        nohup ./xray run -c config.json > "$LOG_XRAY" 2>&1 &
     fi
 
     if pgrep -f "$CF_BIN" > /dev/null; then
          echo -e "${RED}[!] Cloudflared sudah berjalan.${NC}"
     else
         echo -e "${YELLOW}[*] Menjalankan Cloudflared...${NC}"
-        # Pastikan path benar
-        nohup "$CF_BIN" tunnel run --token "$TOKEN" > /dev/null 2>&1 &
+        # Redirect output ke file log
+        nohup "$CF_BIN" tunnel run --token "$TOKEN" > "$LOG_CF" 2>&1 &
     fi
 
     sleep 2
@@ -200,10 +208,46 @@ reinstall() {
     if [[ "$confirm" == "y" ]]; then
         stop_tunnel
         rm -rf "$WORKDIR"
-        # Reset variable dependencies agar dicek lagi (opsional)
         echo -e "${GREEN}[+] File dihapus. Script akan restart...${NC}"
         sleep 1
         exec "$0"
+    fi
+}
+
+# Cek Logs
+view_logs() {
+    echo -e "${CYAN}==============================================================${NC}"
+    echo -e "${YELLOW}LOG XRAY (Terakhir 20 Baris):${NC}"
+    if [ -f "$LOG_XRAY" ]; then
+        tail -n 20 "$LOG_XRAY"
+    else
+        echo -e "${RED}File Log Xray tidak ditemukan.${NC}"
+    fi
+    echo -e "${CYAN}--------------------------------------------------------------${NC}"
+    echo -e "${YELLOW}LOG CLOUDFLARED (Terakhir 20 Baris):${NC}"
+    if [ -f "$LOG_CF" ]; then
+        tail -n 20 "$LOG_CF"
+    else
+        echo -e "${RED}File Log Cloudflared tidak ditemukan.${NC}"
+    fi
+    echo -e "${CYAN}==============================================================${NC}"
+    read -p "Tekan Enter untuk kembali ke menu..."
+}
+
+# Update Script
+update_script() {
+    echo -e "${YELLOW}[*] Mengupdate script dari repository...${NC}"
+    # Gunakan temporary file untuk download
+    if wget -q --show-progress "$REPO_URL" -O "$0.tmp"; then
+        mv "$0.tmp" "$0"
+        chmod +x "$0"
+        echo -e "${GREEN}[+] Update berhasil! Me-restart script...${NC}"
+        sleep 1
+        exec "$0"
+    else
+        echo -e "${RED}[!] Gagal download update. Periksa koneksi atau URL repository.${NC}"
+        rm -f "$0.tmp"
+        read -p "Tekan Enter untuk kembali ke menu..."
     fi
 }
 
@@ -235,7 +279,9 @@ while true; do
     echo -e "[1] Start Tunnel"
     echo -e "[2] Stop Tunnel"
     echo -e "[3] Ambil Link Akun"
-    echo -e "[4] Update/Re-install"
+    echo -e "[4] Update/Re-install (Hapus Data)"
+    echo -e "[5] Cek Log Error"
+    echo -e "[6] Update Script (Dari Repo)"
     echo -e "[0] Keluar"
     echo -e "${CYAN}==============================================================${NC}"
     read -p "Pilih menu: " choice
@@ -245,6 +291,8 @@ while true; do
         2) stop_tunnel ;;
         3) get_link ;;
         4) reinstall ;;
+        5) view_logs ;;
+        6) update_script ;;
         0) echo -e "${GREEN}Terima kasih!${NC}"; exit 0 ;;
         *) echo "Pilihan tidak valid"; sleep 1 ;;
     esac
