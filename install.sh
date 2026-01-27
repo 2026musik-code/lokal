@@ -7,18 +7,24 @@ CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-WORKDIR="$HOME/vless-tunnel"
-USER_DATA="$WORKDIR/user_data.conf"
-XRAY_CONFIG="$WORKDIR/config.json"
-XRAY_BIN="$WORKDIR/xray"
-CF_BIN="$WORKDIR/cloudflared"
+# Struktur Folder Baru: ~/lokal
+WORKDIR="$HOME/lokal"
+BIN_DIR="$WORKDIR/bin"
+CONF_DIR="$WORKDIR/conf"
+LOG_DIR="$WORKDIR/logs"
+
+# File Paths
+USER_DATA="$CONF_DIR/user_data.conf"
+XRAY_CONFIG="$CONF_DIR/config.json"
+XRAY_BIN="$BIN_DIR/xray"
+CF_BIN="$BIN_DIR/cloudflared"
 
 # Log Files
-LOG_XRAY="$WORKDIR/xray.log"
-LOG_CF="$WORKDIR/cloudflared.log"
+LOG_XRAY="$LOG_DIR/xray.log"
+LOG_CF="$LOG_DIR/cloudflared.log"
 
-# URL Repo untuk Update (Ganti dengan URL raw file yang asli)
-REPO_URL="https://raw.githubusercontent.com/username/repo/main/installer.sh"
+# URL Repo untuk Update
+REPO_URL="https://raw.githubusercontent.com/2026musik-code/lokal/main/install.sh"
 
 # Fungsi Header
 header() {
@@ -36,7 +42,6 @@ header() {
 
 # Cek Dependencies
 check_dependencies() {
-    # Cek apakah ini pertama kali dijalankan di sesi ini agar tidak spamming
     if [ -z "$DEPS_CHECKED" ]; then
         echo -e "${YELLOW}[*] Mengecek dependencies...${NC}"
         packages=("curl" "wget" "zip" "jq" "openssl" "util-linux")
@@ -50,14 +55,22 @@ check_dependencies() {
     fi
 }
 
+# Setup Folder Structure
+setup_folders() {
+    mkdir -p "$WORKDIR"
+    mkdir -p "$BIN_DIR"
+    mkdir -p "$CONF_DIR"
+    mkdir -p "$LOG_DIR"
+}
+
 # Install Binaries
 install_binaries() {
-    if [ ! -d "$WORKDIR" ]; then
-        mkdir -p "$WORKDIR"
-    fi
+    setup_folders
 
-    # Cek Xray
-    if [ ! -f "$XRAY_BIN" ]; then
+    # Cek Xray: Hanya download jika file tidak ada atau tidak executable
+    if [ -f "$XRAY_BIN" ] && [ -x "$XRAY_BIN" ]; then
+        echo -e "${GREEN}[+] Xray sudah terinstall. Melewati unduhan.${NC}"
+    else
         echo -e "${YELLOW}[*] Mencari versi terbaru Xray-Core...${NC}"
         LATEST_XRAY_TAG=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
 
@@ -68,17 +81,19 @@ install_binaries() {
 
         echo -e "${GREEN}[+] Versi terbaru: $LATEST_XRAY_TAG${NC}"
         echo -e "${YELLOW}[*] Mendownload Xray-Core ($LATEST_XRAY_TAG)...${NC}"
-        wget -q --show-progress "https://github.com/XTLS/Xray-core/releases/download/$LATEST_XRAY_TAG/Xray-linux-arm64-v8a.zip" -O "$WORKDIR/xray.zip"
+        wget -q --show-progress "https://github.com/XTLS/Xray-core/releases/download/$LATEST_XRAY_TAG/Xray-linux-arm64-v8a.zip" -O "$BIN_DIR/xray.zip"
 
         echo -e "${YELLOW}[*] Mengekstrak Xray...${NC}"
-        unzip -o "$WORKDIR/xray.zip" -d "$WORKDIR" > /dev/null
-        rm "$WORKDIR/xray.zip"
+        unzip -o "$BIN_DIR/xray.zip" -d "$BIN_DIR" > /dev/null
+        rm "$BIN_DIR/xray.zip"
         chmod +x "$XRAY_BIN"
         echo -e "${GREEN}[+] Xray berhasil diinstall.${NC}"
     fi
 
     # Cek Cloudflared
-    if [ ! -f "$CF_BIN" ]; then
+    if [ -f "$CF_BIN" ] && [ -x "$CF_BIN" ]; then
+        echo -e "${GREEN}[+] Cloudflared sudah terinstall. Melewati unduhan.${NC}"
+    else
         echo -e "${YELLOW}[*] Mendownload Cloudflared...${NC}"
         wget -q --show-progress "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" -O "$CF_BIN"
         chmod +x "$CF_BIN"
@@ -163,9 +178,12 @@ start_tunnel() {
         echo -e "${RED}[!] Xray sudah berjalan.${NC}"
     else
         echo -e "${YELLOW}[*] Menjalankan Xray...${NC}"
-        cd "$WORKDIR" || exit
+        # Jalankan dari folder bin untuk memastikan path ./xray benar jika ada dependensi lokal,
+        # tapi config ada di folder conf. Gunakan path absolut untuk amannya.
+
         # Redirect output ke file log
-        nohup ./xray run -c config.json > "$LOG_XRAY" 2>&1 &
+        # Pastikan menggunakan path absolut ke binary dan config
+        nohup "$XRAY_BIN" run -c "$XRAY_CONFIG" > "$LOG_XRAY" 2>&1 &
     fi
 
     if pgrep -f "$CF_BIN" > /dev/null; then
@@ -203,12 +221,12 @@ get_link() {
 
 # Re-install
 reinstall() {
-    echo -e "${RED}[!] PERINGATAN: Ini akan menghapus semua file dan konfigurasi!${NC}"
+    echo -e "${RED}[!] PERINGATAN: Ini akan menghapus semua file (binaries, config, log)!${NC}"
     read -p "Apakah Anda yakin? (y/n): " confirm
     if [[ "$confirm" == "y" ]]; then
         stop_tunnel
         rm -rf "$WORKDIR"
-        echo -e "${GREEN}[+] File dihapus. Script akan restart...${NC}"
+        echo -e "${GREEN}[+] Folder $WORKDIR dihapus. Script akan restart...${NC}"
         sleep 1
         exec "$0"
     fi
@@ -237,7 +255,8 @@ view_logs() {
 # Update Script
 update_script() {
     echo -e "${YELLOW}[*] Mengupdate script dari repository...${NC}"
-    # Gunakan temporary file untuk download
+    echo -e "${CYAN}Repo: $REPO_URL${NC}"
+
     if wget -q --show-progress "$REPO_URL" -O "$0.tmp"; then
         mv "$0.tmp" "$0"
         chmod +x "$0"
