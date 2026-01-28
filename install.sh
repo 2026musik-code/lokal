@@ -107,17 +107,19 @@ install_binaries() {
 # Generate/Reset Config Xray
 generate_xray_config() {
     local uuid=$1
+    local loglevel=${2:-"info"} # Default loglevel info, bisa di-override
+
     echo -e "${YELLOW}[*] Membuat konfigurasi Xray (Port 8080, VLESS WS)...${NC}"
-    # Gunakan 127.0.0.1 agar tidak ada isu dengan localhost (ipv6)
+    # Listen 0.0.0.0 agar bind ke semua interface, antisipasi routing internal
     cat <<EOF > "$XRAY_CONFIG"
 {
   "log": {
-    "loglevel": "info"
+    "loglevel": "$loglevel"
   },
   "inbounds": [
     {
       "port": 8080,
-      "listen": "127.0.0.1",
+      "listen": "0.0.0.0",
       "protocol": "vless",
       "settings": {
         "clients": [
@@ -131,7 +133,10 @@ generate_xray_config() {
       "streamSettings": {
         "network": "ws",
         "wsSettings": {
-          "path": "/vless"
+          "path": "/vless",
+          "headers": {
+            "Host": "127.0.0.1"
+          }
         }
       },
       "sniffing": {
@@ -178,7 +183,7 @@ setup_wizard() {
         echo "DOMAIN=\"$USER_DOMAIN\"" >> "$USER_DATA"
         echo "UUID=\"$UUID\"" >> "$USER_DATA"
 
-        generate_xray_config "$UUID"
+        generate_xray_config "$UUID" "info"
 
         echo -e "${GREEN}[+] Konfigurasi disimpan!${NC}"
         sleep 2
@@ -279,7 +284,9 @@ start_tunnel() {
 
     sleep 1
     echo -e "${GREEN}[+] Tunnel berhasil dijalankan!${NC}"
-    read -p "Tekan Enter untuk kembali ke menu..."
+    if [[ "${FUNCNAME[1]}" != "enable_debug_mode" && "${FUNCNAME[1]}" != "repair_config" ]]; then
+        read -p "Tekan Enter untuk kembali ke menu..."
+    fi
 }
 
 # Stop Tunnel
@@ -301,7 +308,7 @@ stop_tunnel() {
     fi
 
     echo -e "${GREEN}[+] Semua proses dimatikan.${NC}"
-    if [[ "${FUNCNAME[1]}" != "change_token" && "${FUNCNAME[1]}" != "repair_config" ]]; then
+    if [[ "${FUNCNAME[1]}" != "change_token" && "${FUNCNAME[1]}" != "repair_config" && "${FUNCNAME[1]}" != "enable_debug_mode" ]]; then
         read -p "Tekan Enter untuk kembali ke menu..."
     fi
 }
@@ -347,10 +354,34 @@ repair_config() {
     source "$USER_DATA"
     echo -e "${YELLOW}[*] Memperbaiki/Reset Konfigurasi Xray...${NC}"
     stop_tunnel
-    generate_xray_config "$UUID"
-    echo -e "${GREEN}[+] Config Xray berhasil direset dengan setting optimal (127.0.0.1, Sniffing, Log Info).${NC}"
+    generate_xray_config "$UUID" "info"
+    echo -e "${GREEN}[+] Config Xray berhasil direset dengan setting optimal (0.0.0.0, Sniffing, Log Info).${NC}"
     echo -e "${YELLOW}[*] Me-restart Tunnel...${NC}"
     start_tunnel
+}
+
+# Enable Debug Mode
+enable_debug_mode() {
+    source "$USER_DATA"
+    echo -e "${CYAN}==============================================================${NC}"
+    echo -e "${YELLOW}AKTIFKAN MODE DEBUG EKSTRIM${NC}"
+    echo -e "${CYAN}==============================================================${NC}"
+    echo -e "Ini akan merubah log level Xray ke 'debug' dan merestart tunnel."
+    echo -e "Anda akan melihat semua detail koneksi."
+    echo ""
+
+    stop_tunnel
+    generate_xray_config "$UUID" "debug"
+    echo -e "${GREEN}[+] Config Xray diupdate ke Debug Mode.${NC}"
+
+    # Jalankan tunnel
+    start_tunnel
+
+    echo -e "${YELLOW}[*] Menampilkan Log Xray (Tekan Ctrl+C untuk keluar):${NC}"
+    # Gunakan trap untuk menangkap Ctrl+C dan kembali ke menu
+    trap 'echo -e "\n${GREEN}[+] Keluar dari mode pantau log.${NC}"; return' SIGINT
+    tail -f "$LOG_XRAY"
+    trap - SIGINT
 }
 
 # Diagnosis
@@ -521,6 +552,7 @@ while true; do
     echo -e "[8] Update/Re-install (Hapus Data)"
     echo -e "[9] Perbaiki Konfigurasi Xray (Reset)"
     echo -e "[10] Diagnosa Masalah"
+    echo -e "[11] Mode Debug (Log Detail)"
     echo -e "[?] Tutorial & Cara Setting"
     echo -e "[0] Keluar"
     echo -e "${CYAN}==============================================================${NC}"
@@ -537,6 +569,7 @@ while true; do
         8) reinstall ;;
         9) repair_config ;;
         10) run_diagnostics ;;
+        11) enable_debug_mode ;;
         "?") show_help ;;
         0) echo -e "${GREEN}Terima kasih!${NC}"; exit 0 ;;
         *) echo "Pilihan tidak valid"; sleep 1 ;;
