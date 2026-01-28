@@ -17,7 +17,8 @@ LOG_DIR="$WORKDIR/logs"
 USER_DATA="$CONF_DIR/user_data.conf"
 XRAY_CONFIG="$CONF_DIR/config.json"
 XRAY_BIN="$BIN_DIR/xray"
-CF_BIN="$BIN_DIR/cloudflared"
+# Cloudflared sekarang menggunakan binary sistem Termux
+CF_BIN="cloudflared"
 
 # Log & PID Files
 LOG_XRAY="$LOG_DIR/xray.log"
@@ -46,8 +47,8 @@ header() {
 check_dependencies() {
     if [ -z "$DEPS_CHECKED" ]; then
         echo -e "${YELLOW}[*] Mengecek dependencies...${NC}"
-        # Tambahkan iproute2 untuk ss
-        packages=("curl" "wget" "zip" "jq" "openssl" "util-linux" "procps" "iproute2")
+        # Tambahkan cloudflared ke paket yang diinstall via pkg
+        packages=("curl" "wget" "zip" "jq" "openssl" "util-linux" "procps" "iproute2" "cloudflared")
         for pkg in "${packages[@]}"; do
             if ! command -v "$pkg" &> /dev/null && ! pkg list-installed "$pkg" &> /dev/null; then
                 echo -e "${RED}[!] $pkg belum terinstall. Menginstall...${NC}"
@@ -69,6 +70,12 @@ setup_folders() {
 # Install Binaries
 install_binaries() {
     setup_folders
+
+    # Bersihkan binary cloudflared manual lama jika ada (karena sekarang pakai pkg)
+    if [ -f "$BIN_DIR/cloudflared" ]; then
+        echo -e "${YELLOW}[*] Menghapus binary cloudflared lama (diganti versi pkg)...${NC}"
+        rm "$BIN_DIR/cloudflared"
+    fi
 
     # Cek Xray: Hanya download jika file tidak ada atau tidak executable
     if [ -f "$XRAY_BIN" ] && [ -x "$XRAY_BIN" ]; then
@@ -93,24 +100,21 @@ install_binaries() {
         echo -e "${GREEN}[+] Xray berhasil diinstall.${NC}"
     fi
 
-    # Cek Cloudflared
-    if [ -f "$CF_BIN" ] && [ -x "$CF_BIN" ]; then
-        echo -e "${GREEN}[+] Cloudflared ditemukan di $CF_BIN. Melewati unduhan.${NC}"
-    else
-        echo -e "${YELLOW}[*] Mendownload Cloudflared...${NC}"
-        wget -q --show-progress "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" -O "$CF_BIN"
-        chmod +x "$CF_BIN"
-        echo -e "${GREEN}[+] Cloudflared berhasil diinstall.${NC}"
+    # Cloudflared sudah dihandle oleh pkg install di check_dependencies
+    if ! command -v cloudflared &> /dev/null; then
+         echo -e "${RED}[!] Gagal menginstall cloudflared via pkg. Coba 'pkg update && pkg install cloudflared' manual.${NC}"
+         exit 1
     fi
 }
 
 # Generate/Reset Config Xray
 generate_xray_config() {
     local uuid=$1
-    local loglevel=${2:-"info"} # Default loglevel info, bisa di-override
+    local loglevel=${2:-"info"}
 
     echo -e "${YELLOW}[*] Membuat konfigurasi Xray (Port 8080, VLESS WS)...${NC}"
-    # Listen 0.0.0.0 agar bind ke semua interface, antisipasi routing internal
+    # Listen 0.0.0.0 agar bind ke semua interface
+    # Tambahkan maxEarlyData: 0 dan earlyDataHeaderName: "" untuk fix ws closed 1000
     cat <<EOF > "$XRAY_CONFIG"
 {
   "log": {
@@ -136,7 +140,9 @@ generate_xray_config() {
           "path": "/vless",
           "headers": {
             "Host": "127.0.0.1"
-          }
+          },
+          "maxEarlyData": 0,
+          "earlyDataHeaderName": ""
         }
       },
       "sniffing": {
@@ -231,36 +237,25 @@ start_tunnel() {
          echo -e "${RED}[!] Cloudflared sudah berjalan.${NC}"
     else
         echo -e "${YELLOW}[*] Menjalankan Cloudflared...${NC}"
-        cd "$BIN_DIR" || exit
-
-        # Cek integritas binary
-        if ! ./cloudflared --version > /dev/null 2>&1; then
-             echo -e "${RED}[!] Binary cloudflared rusak atau tidak kompatibel dengan device ini.${NC}"
-             echo -e "${YELLOW}[*] Mencoba download ulang...${NC}"
-             rm "$CF_BIN"
-             install_binaries
-             cd "$BIN_DIR" || exit
-        fi
+        # Tidak perlu cd BIN_DIR untuk cloudflared karena pakai versi sistem
 
         > "$LOG_CF"
         touch "$LOG_CF"
         chmod 644 "$LOG_CF"
 
-        # Tambahkan --protocol http2 untuk stabilitas lebih baik
-        nohup ./cloudflared tunnel run --protocol http2 --token "$TOKEN" > "$LOG_CF" 2>&1 &
+        # Gunakan binary sistem 'cloudflared'
+        # Tambahkan --edge-ip-version 4 untuk fix isu IPv6/DNS Loop
+        # Tambahkan --protocol http2 untuk stabilitas
+        # Tambahkan --no-autoupdate agar tidak conflict dengan pkg manager
+        nohup cloudflared tunnel run --edge-ip-version 4 --protocol http2 --no-autoupdate --token "$TOKEN" > "$LOG_CF" 2>&1 &
         echo $! > "$PID_CF"
 
         sleep 5
 
         if [ ! -s "$LOG_CF" ]; then
-            echo -e "${RED}[!] Log Cloudflared kosong. Kemungkinan masalah permission atau binary crash.${NC}"
-            echo -e "${YELLOW}[*] Mencoba menjalankan diagnostik (Direct Output):${NC}"
-            echo -e "${CYAN}------------------------------------------------${NC}"
-            ./cloudflared tunnel run --protocol http2 --token "$TOKEN" &
-            CF_TEST_PID=$!
-            sleep 5
-            kill $CF_TEST_PID 2>/dev/null
-            echo -e "${CYAN}------------------------------------------------${NC}"
+            echo -e "${RED}[!] Log Cloudflared kosong.${NC}"
+            echo -e "${YELLOW}[*] Mencoba diagnostik foreground...${NC}"
+            timeout 5s cloudflared tunnel run --edge-ip-version 4 --protocol http2 --token "$TOKEN"
         fi
 
         if grep -q "Cannot determine default configuration path" "$LOG_CF"; then
@@ -355,7 +350,7 @@ repair_config() {
     echo -e "${YELLOW}[*] Memperbaiki/Reset Konfigurasi Xray...${NC}"
     stop_tunnel
     generate_xray_config "$UUID" "info"
-    echo -e "${GREEN}[+] Config Xray berhasil direset dengan setting optimal (0.0.0.0, Sniffing, Log Info).${NC}"
+    echo -e "${GREEN}[+] Config Xray berhasil direset dengan setting optimal (MaxEarlyData:0, IPv4 Edge).${NC}"
     echo -e "${YELLOW}[*] Me-restart Tunnel...${NC}"
     start_tunnel
 }
