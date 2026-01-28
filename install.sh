@@ -46,8 +46,8 @@ header() {
 check_dependencies() {
     if [ -z "$DEPS_CHECKED" ]; then
         echo -e "${YELLOW}[*] Mengecek dependencies...${NC}"
-        # Tambahkan procps untuk pgrep/pkill
-        packages=("curl" "wget" "zip" "jq" "openssl" "util-linux" "procps")
+        # Tambahkan iproute2 untuk ss
+        packages=("curl" "wget" "zip" "jq" "openssl" "util-linux" "procps" "iproute2")
         for pkg in "${packages[@]}"; do
             if ! command -v "$pkg" &> /dev/null && ! pkg list-installed "$pkg" &> /dev/null; then
                 echo -e "${RED}[!] $pkg belum terinstall. Menginstall...${NC}"
@@ -104,6 +104,50 @@ install_binaries() {
     fi
 }
 
+# Generate/Reset Config Xray
+generate_xray_config() {
+    local uuid=$1
+    echo -e "${YELLOW}[*] Membuat konfigurasi Xray (Port 8080, VLESS WS)...${NC}"
+    cat <<EOF > "$XRAY_CONFIG"
+{
+  "log": {
+    "loglevel": "info"
+  },
+  "inbounds": [
+    {
+      "port": 8080,
+      "listen": "127.0.0.1",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "$uuid",
+            "level": 0
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "/vless"
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls"]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
+}
+EOF
+}
+
 # Setup Wizard
 setup_wizard() {
     if [ ! -f "$USER_DATA" ]; then
@@ -133,40 +177,8 @@ setup_wizard() {
         echo "DOMAIN=\"$USER_DOMAIN\"" >> "$USER_DATA"
         echo "UUID=\"$UUID\"" >> "$USER_DATA"
 
-        # Buat Config Xray
-        cat <<EOF > "$XRAY_CONFIG"
-{
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "port": 8080,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "$UUID",
-            "level": 0
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "path": "/vless"
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom"
-    }
-  ]
-}
-EOF
+        generate_xray_config "$UUID"
+
         echo -e "${GREEN}[+] Konfigurasi disimpan!${NC}"
         sleep 2
     fi
@@ -221,30 +233,22 @@ start_tunnel() {
              echo -e "${YELLOW}[*] Mencoba download ulang...${NC}"
              rm "$CF_BIN"
              install_binaries
-             # Coba lagi setelah download
              cd "$BIN_DIR" || exit
         fi
 
-        # Kosongkan log lama
         > "$LOG_CF"
-
-        # Pastikan permission log file benar
         touch "$LOG_CF"
         chmod 644 "$LOG_CF"
 
-        # Jalankan
         nohup ./cloudflared tunnel run --token "$TOKEN" > "$LOG_CF" 2>&1 &
         echo $! > "$PID_CF"
 
-        # Tunggu sebentar dan cek log
         sleep 5
 
-        # Debugging: Cek apakah file log terisi
         if [ ! -s "$LOG_CF" ]; then
             echo -e "${RED}[!] Log Cloudflared kosong. Kemungkinan masalah permission atau binary crash.${NC}"
             echo -e "${YELLOW}[*] Mencoba menjalankan diagnostik (Direct Output):${NC}"
             echo -e "${CYAN}------------------------------------------------${NC}"
-            # Jalankan foreground untuk lihat output langsung
             ./cloudflared tunnel run --token "$TOKEN" &
             CF_TEST_PID=$!
             sleep 5
@@ -294,8 +298,7 @@ stop_tunnel() {
     fi
 
     echo -e "${GREEN}[+] Semua proses dimatikan.${NC}"
-    # Jika dipanggil dari menu, pause. Jika dari fungsi lain, tidak perlu.
-    if [[ "${FUNCNAME[1]}" != "change_token" ]]; then
+    if [[ "${FUNCNAME[1]}" != "change_token" && "${FUNCNAME[1]}" != "repair_config" ]]; then
         read -p "Tekan Enter untuk kembali ke menu..."
     fi
 }
@@ -323,17 +326,71 @@ change_token() {
     if [ -z "$NEW_TOKEN" ]; then
         echo -e "${RED}[!] Token tidak boleh kosong.${NC}"
     else
-        # Update file user_data
         sed -i "s|TOKEN=\".*\"|TOKEN=\"$NEW_TOKEN\"|" "$USER_DATA"
         echo -e "${GREEN}[+] Token berhasil diupdate!${NC}"
 
-        # Restart jika sedang berjalan
         if is_running "$PID_CF" "cloudflared"; then
             echo -e "${YELLOW}[*] Me-restart Cloudflare Tunnel...${NC}"
             stop_tunnel
             start_tunnel
         fi
     fi
+    read -p "Tekan Enter untuk kembali ke menu..."
+}
+
+# Repair Config
+repair_config() {
+    source "$USER_DATA"
+    echo -e "${YELLOW}[*] Memperbaiki/Reset Konfigurasi Xray...${NC}"
+    stop_tunnel
+    generate_xray_config "$UUID"
+    echo -e "${GREEN}[+] Config Xray berhasil direset dengan setting optimal (127.0.0.1, Sniffing, Log Info).${NC}"
+    echo -e "${YELLOW}[*] Me-restart Tunnel...${NC}"
+    start_tunnel
+}
+
+# Diagnosis
+run_diagnostics() {
+    clear
+    echo -e "${CYAN}==============================================================${NC}"
+    echo -e "${YELLOW}DIAGNOSA MASALAH KONEKSI${NC}"
+    echo -e "${CYAN}==============================================================${NC}"
+
+    echo -e "${GREEN}1. Cek Port 8080 (Xray):${NC}"
+    if ss -lnt | grep -q ":8080"; then
+        echo -e "   [OK] Port 8080 sedang listening."
+    else
+        echo -e "   ${RED}[FAIL] Port 8080 tidak aktif! Xray mungkin mati.${NC}"
+    fi
+    echo ""
+
+    echo -e "${GREEN}2. Cek Koneksi Masuk (Log Xray):${NC}"
+    echo -e "   Menampilkan 5 baris terakhir akses log:"
+    if [ -f "$LOG_XRAY" ]; then
+        # Coba cari log accepted/rejected, jika kosong tampilkan ekor log biasa
+        if grep -E "accepted|rejected" "$LOG_XRAY" | tail -n 5; then
+             :
+        else
+             tail -n 5 "$LOG_XRAY"
+        fi
+    else
+        echo -e "   ${RED}[!] File log tidak ditemukan.${NC}"
+    fi
+    echo ""
+
+    echo -e "${GREEN}3. Cek Status Proses:${NC}"
+    if is_running "$PID_XRAY" "xray"; then
+        echo -e "   [OK] Xray berjalan (PID: $(cat $PID_XRAY))"
+    else
+        echo -e "   ${RED}[FAIL] Xray MATI${NC}"
+    fi
+    if is_running "$PID_CF" "cloudflared"; then
+        echo -e "   [OK] Cloudflared berjalan (PID: $(cat $PID_CF))"
+    else
+        echo -e "   ${RED}[FAIL] Cloudflared MATI${NC}"
+    fi
+
+    echo -e "${CYAN}==============================================================${NC}"
     read -p "Tekan Enter untuk kembali ke menu..."
 }
 
@@ -453,6 +510,8 @@ while true; do
     echo -e "[6] Update Script (Dari Repo)"
     echo -e "[7] Refresh Status"
     echo -e "[8] Update/Re-install (Hapus Data)"
+    echo -e "[9] Perbaiki Konfigurasi Xray (Reset)"
+    echo -e "[10] Diagnosa Masalah"
     echo -e "[?] Tutorial & Cara Setting"
     echo -e "[0] Keluar"
     echo -e "${CYAN}==============================================================${NC}"
@@ -467,6 +526,8 @@ while true; do
         6) update_script ;;
         7) continue ;;
         8) reinstall ;;
+        9) repair_config ;;
+        10) run_diagnostics ;;
         "?") show_help ;;
         0) echo -e "${GREEN}Terima kasih!${NC}"; exit 0 ;;
         *) echo "Pilihan tidak valid"; sleep 1 ;;
