@@ -108,6 +108,7 @@ install_binaries() {
 generate_xray_config() {
     local uuid=$1
     echo -e "${YELLOW}[*] Membuat konfigurasi Xray (Port 8080, VLESS WS)...${NC}"
+    # Gunakan 127.0.0.1 agar tidak ada isu dengan localhost (ipv6)
     cat <<EOF > "$XRAY_CONFIG"
 {
   "log": {
@@ -240,7 +241,8 @@ start_tunnel() {
         touch "$LOG_CF"
         chmod 644 "$LOG_CF"
 
-        nohup ./cloudflared tunnel run --token "$TOKEN" > "$LOG_CF" 2>&1 &
+        # Tambahkan --protocol http2 untuk stabilitas lebih baik
+        nohup ./cloudflared tunnel run --protocol http2 --token "$TOKEN" > "$LOG_CF" 2>&1 &
         echo $! > "$PID_CF"
 
         sleep 5
@@ -249,7 +251,7 @@ start_tunnel() {
             echo -e "${RED}[!] Log Cloudflared kosong. Kemungkinan masalah permission atau binary crash.${NC}"
             echo -e "${YELLOW}[*] Mencoba menjalankan diagnostik (Direct Output):${NC}"
             echo -e "${CYAN}------------------------------------------------${NC}"
-            ./cloudflared tunnel run --token "$TOKEN" &
+            ./cloudflared tunnel run --protocol http2 --token "$TOKEN" &
             CF_TEST_PID=$!
             sleep 5
             kill $CF_TEST_PID 2>/dev/null
@@ -270,7 +272,8 @@ start_tunnel() {
              echo -e "${RED}[!] Cloudflared gagal berjalan. Cek menu Log.${NC}"
         else
              echo -e "${CYAN}[INFO] Pastikan di Dashboard Cloudflare Zero Trust:${NC}"
-             echo -e "${CYAN}       Service: HTTP  |  URL: localhost:8080${NC}"
+             echo -e "${CYAN}       Service: HTTP  |  URL: 127.0.0.1:8080${NC}"
+             echo -e "${CYAN}       (Jangan pakai localhost untuk menghindari isu IPv6)${NC}"
         fi
     fi
 
@@ -306,7 +309,8 @@ stop_tunnel() {
 # Ambil Link
 get_link() {
     source "$USER_DATA"
-    LINK="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=%2Fvless#Termux-VLESS"
+    # Tambahkan sni=domain untuk memastikan SNI terkirim
+    LINK="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=%2Fvless&sni=${DOMAIN}#Termux-VLESS"
     echo -e "${CYAN}==============================================================${NC}"
     echo -e "${YELLOW}VLESS LINK:${NC}"
     echo -e "${LINK}"
@@ -365,12 +369,18 @@ run_diagnostics() {
     echo ""
 
     echo -e "${GREEN}2. Cek Koneksi Masuk (Log Xray):${NC}"
-    echo -e "   Menampilkan 5 baris terakhir akses log:"
+    echo -e "   Menampilkan 10 baris terakhir akses log:"
     if [ -f "$LOG_XRAY" ]; then
-        # Coba cari log accepted/rejected, jika kosong tampilkan ekor log biasa
-        if grep -E "accepted|rejected" "$LOG_XRAY" | tail -n 5; then
-             :
+        # Coba cari log accepted/rejected
+        if grep -E "accepted|rejected" "$LOG_XRAY" > /dev/null; then
+             echo -e "${YELLOW}Ditemukan aktivitas:${NC}"
+             grep -E "accepted|rejected" "$LOG_XRAY" | tail -n 10
+
+             if grep -q "rejected" "$LOG_XRAY"; then
+                 echo -e "${RED}[!] WARNING: Ada koneksi 'rejected'. Cek UUID atau Path.${NC}"
+             fi
         else
+             echo -e "${YELLOW}Belum ada aktivitas koneksi (accepted/rejected).${NC}"
              tail -n 5 "$LOG_XRAY"
         fi
     else
@@ -416,12 +426,11 @@ show_help() {
     echo -e "   - ${YELLOW}Subdomain:${NC} Isi bebas (contoh: vless)."
     echo -e "   - ${YELLOW}Domain:${NC} Pilih domain Anda ($DOMAIN)."
     echo -e "   - ${YELLOW}Service:${NC} Pilih ${CYAN}HTTP${NC}."
-    echo -e "   - ${YELLOW}URL:${NC} Ketik ${CYAN}localhost:8080${NC}."
+    echo -e "   - ${YELLOW}URL:${NC} Ketik ${CYAN}127.0.0.1:8080${NC}."
     echo ""
-    echo -e "${RED}KENAPA localhost:8080?${NC}"
-    echo -e "Script ini menjalankan Xray di port 8080. Cloudflared berfungsi"
-    echo -e "sebagai jembatan yang meneruskan traffic dari internet ke"
-    echo -e "port lokal 8080 di HP Anda."
+    echo -e "${RED}KENAPA 127.0.0.1:8080?${NC}"
+    echo -e "Menggunakan 'localhost' terkadang dianggap IPv6 (::1) oleh sistem."
+    echo -e "Gunakan '127.0.0.1' agar pasti mengarah ke Xray yang kita install."
     echo -e "${CYAN}==============================================================${NC}"
     read -p "Tekan Enter untuk kembali ke menu..."
 }
