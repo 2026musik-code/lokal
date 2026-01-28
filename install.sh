@@ -215,14 +215,29 @@ start_tunnel() {
         echo -e "${YELLOW}[*] Menjalankan Cloudflared...${NC}"
         cd "$BIN_DIR" || exit
 
-        # Kosongkan log lama agar error baru terlihat jelas
+        # Kosongkan log lama agar error baru terlihat jelas (jika ada)
         > "$LOG_CF"
+
+        # Update: Pastikan menggunakan logfile argument jika possible atau redirection yang benar
+        # Tambahkan output ke console jika redirection gagal, tapi redirection standar should work.
+        # Check permissions log file
+        touch "$LOG_CF"
+        chmod 644 "$LOG_CF"
 
         nohup ./cloudflared tunnel run --token "$TOKEN" > "$LOG_CF" 2>&1 &
         echo $! > "$PID_CF"
 
         # Tunggu sebentar dan cek log untuk error umum
-        sleep 3
+        sleep 5
+
+        # Debugging: Cek apakah file log terisi
+        if [ ! -s "$LOG_CF" ]; then
+            echo -e "${RED}[!] Log Cloudflared kosong. Kemungkinan masalah permission atau binary crash.${NC}"
+            # Coba jalankan sebentar tanpa background untuk capture error jika log kosong
+            echo -e "${YELLOW}[*] Mencoba menjalankan diagnostik singkat...${NC}"
+            timeout 5s ./cloudflared tunnel run --token "$TOKEN" 2>&1 | head -n 5
+        fi
+
         if grep -q "Cannot determine default configuration path" "$LOG_CF"; then
             echo -e "${YELLOW}[!] Warning: Konfigurasi default tidak ditemukan (Normal jika pakai token).${NC}"
         fi
