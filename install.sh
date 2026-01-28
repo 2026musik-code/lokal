@@ -214,11 +214,31 @@ start_tunnel() {
     else
         echo -e "${YELLOW}[*] Menjalankan Cloudflared...${NC}"
         cd "$BIN_DIR" || exit
+
+        # Kosongkan log lama agar error baru terlihat jelas
+        > "$LOG_CF"
+
         nohup ./cloudflared tunnel run --token "$TOKEN" > "$LOG_CF" 2>&1 &
         echo $! > "$PID_CF"
+
+        # Tunggu sebentar dan cek log untuk error umum
+        sleep 3
+        if grep -q "Cannot determine default configuration path" "$LOG_CF"; then
+            echo -e "${YELLOW}[!] Warning: Konfigurasi default tidak ditemukan (Normal jika pakai token).${NC}"
+        fi
+
+        if grep -q "Unauthorized: Run \`cloudflared tunnel login\`" "$LOG_CF"; then
+             echo -e "${RED}[!] Error: Token Salah atau Expired! Silakan ganti token.${NC}"
+             stop_tunnel > /dev/null
+             return
+        fi
+
+        if ! is_running "$PID_CF" "cloudflared"; then
+             echo -e "${RED}[!] Cloudflared gagal berjalan. Cek menu Log.${NC}"
+        fi
     fi
 
-    sleep 2
+    sleep 1
     echo -e "${GREEN}[+] Tunnel berhasil dijalankan!${NC}"
     read -p "Tekan Enter untuk kembali ke menu..."
 }
@@ -242,7 +262,10 @@ stop_tunnel() {
     fi
 
     echo -e "${GREEN}[+] Semua proses dimatikan.${NC}"
-    read -p "Tekan Enter untuk kembali ke menu..."
+    # Jika dipanggil dari menu, pause. Jika dari fungsi lain, tidak perlu.
+    if [[ "${FUNCNAME[1]}" != "change_token" ]]; then
+        read -p "Tekan Enter untuk kembali ke menu..."
+    fi
 }
 
 # Ambil Link
@@ -253,6 +276,32 @@ get_link() {
     echo -e "${YELLOW}VLESS LINK:${NC}"
     echo -e "${LINK}"
     echo -e "${CYAN}==============================================================${NC}"
+    read -p "Tekan Enter untuk kembali ke menu..."
+}
+
+# Change Token
+change_token() {
+    echo -e "${CYAN}==============================================================${NC}"
+    echo -e "${YELLOW}GANTI TOKEN CLOUDFLARE${NC}"
+    echo -e "${CYAN}==============================================================${NC}"
+    echo -e "Token saat ini: ${TOKEN:0:10}......${TOKEN: -5}"
+    echo ""
+    read -p "Masukkan Token Baru: " NEW_TOKEN
+
+    if [ -z "$NEW_TOKEN" ]; then
+        echo -e "${RED}[!] Token tidak boleh kosong.${NC}"
+    else
+        # Update file user_data
+        sed -i "s|TOKEN=\".*\"|TOKEN=\"$NEW_TOKEN\"|" "$USER_DATA"
+        echo -e "${GREEN}[+] Token berhasil diupdate!${NC}"
+
+        # Restart jika sedang berjalan
+        if is_running "$PID_CF" "cloudflared"; then
+            echo -e "${YELLOW}[*] Me-restart Cloudflare Tunnel...${NC}"
+            stop_tunnel
+            start_tunnel
+        fi
+    fi
     read -p "Tekan Enter untuk kembali ke menu..."
 }
 
@@ -335,9 +384,11 @@ while true; do
     echo -e "[1] Start Tunnel"
     echo -e "[2] Stop Tunnel"
     echo -e "[3] Ambil Link Akun"
-    echo -e "[4] Update/Re-install (Hapus Data)"
+    echo -e "[4] Ganti Token Cloudflare"
     echo -e "[5] Cek Log Error"
     echo -e "[6] Update Script (Dari Repo)"
+    echo -e "[7] Refresh Status"
+    echo -e "[8] Update/Re-install (Hapus Data)"
     echo -e "[0] Keluar"
     echo -e "${CYAN}==============================================================${NC}"
     read -p "Pilih menu: " choice
@@ -346,9 +397,11 @@ while true; do
         1) start_tunnel ;;
         2) stop_tunnel ;;
         3) get_link ;;
-        4) reinstall ;;
+        4) change_token ;;
         5) view_logs ;;
         6) update_script ;;
+        7) continue ;; # Loop ulang otomatis refresh status
+        8) reinstall ;;
         0) echo -e "${GREEN}Terima kasih!${NC}"; exit 0 ;;
         *) echo "Pilihan tidak valid"; sleep 1 ;;
     esac
