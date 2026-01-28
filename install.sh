@@ -235,6 +235,9 @@ start_tunnel() {
 
         if ! is_running "$PID_CF" "cloudflared"; then
              echo -e "${RED}[!] Cloudflared gagal berjalan. Cek menu Log.${NC}"
+        else
+             echo -e "${CYAN}[INFO] Pastikan di Dashboard Cloudflare Zero Trust:${NC}"
+             echo -e "${CYAN}       Service: HTTP  |  URL: localhost:8080${NC}"
         fi
     fi
 
@@ -302,6 +305,38 @@ change_token() {
             start_tunnel
         fi
     fi
+    read -p "Tekan Enter untuk kembali ke menu..."
+}
+
+# Tutorial
+show_help() {
+    clear
+    echo -e "${CYAN}==============================================================${NC}"
+    echo -e "${YELLOW}PANDUAN SETTING CLOUDFLARE ZERO TRUST${NC}"
+    echo -e "${CYAN}==============================================================${NC}"
+    echo -e "${GREEN}1. Login ke Dashboard:${NC}"
+    echo -e "   Buka https://one.dash.cloudflare.com/ dan login."
+    echo ""
+    echo -e "${GREEN}2. Masuk ke Menu Tunnels:${NC}"
+    echo -e "   Pilih 'Networks' -> 'Tunnels'."
+    echo ""
+    echo -e "${GREEN}3. Pilih/Buat Tunnel:${NC}"
+    echo -e "   - Klik nama tunnel yang tokennya Anda pakai di sini."
+    echo -e "   - Klik 'Configure'."
+    echo ""
+    echo -e "${GREEN}4. Setting Public Hostname (PENTING!):${NC}"
+    echo -e "   - Masuk ke tab 'Public Hostname'."
+    echo -e "   - Klik 'Add a public hostname'."
+    echo -e "   - ${YELLOW}Subdomain:${NC} Isi bebas (contoh: vless)."
+    echo -e "   - ${YELLOW}Domain:${NC} Pilih domain Anda ($DOMAIN)."
+    echo -e "   - ${YELLOW}Service:${NC} Pilih ${CYAN}HTTP${NC}."
+    echo -e "   - ${YELLOW}URL:${NC} Ketik ${CYAN}localhost:8080${NC}."
+    echo ""
+    echo -e "${RED}KENAPA localhost:8080?${NC}"
+    echo -e "Script ini menjalankan Xray di port 8080. Cloudflared berfungsi"
+    echo -e "sebagai jembatan yang meneruskan traffic dari internet ke"
+    echo -e "port lokal 8080 di HP Anda."
+    echo -e "${CYAN}==============================================================${NC}"
     read -p "Tekan Enter untuk kembali ke menu..."
 }
 
@@ -389,6 +424,7 @@ while true; do
     echo -e "[6] Update Script (Dari Repo)"
     echo -e "[7] Refresh Status"
     echo -e "[8] Update/Re-install (Hapus Data)"
+    echo -e "[?] Tutorial & Cara Setting"
     echo -e "[0] Keluar"
     echo -e "${CYAN}==============================================================${NC}"
     read -p "Pilih menu: " choice
@@ -400,8 +436,9 @@ while true; do
         4) change_token ;;
         5) view_logs ;;
         6) update_script ;;
-        7) continue ;; # Loop ulang otomatis refresh status
+        7) continue ;;
         8) reinstall ;;
+        "?") show_help ;;
         0) echo -e "${GREEN}Terima kasih!${NC}"; exit 0 ;;
         *) echo "Pilihan tidak valid"; sleep 1 ;;
     esac
