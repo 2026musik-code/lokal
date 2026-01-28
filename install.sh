@@ -215,27 +215,41 @@ start_tunnel() {
         echo -e "${YELLOW}[*] Menjalankan Cloudflared...${NC}"
         cd "$BIN_DIR" || exit
 
-        # Kosongkan log lama agar error baru terlihat jelas (jika ada)
+        # Cek integritas binary
+        if ! ./cloudflared --version > /dev/null 2>&1; then
+             echo -e "${RED}[!] Binary cloudflared rusak atau tidak kompatibel dengan device ini.${NC}"
+             echo -e "${YELLOW}[*] Mencoba download ulang...${NC}"
+             rm "$CF_BIN"
+             install_binaries
+             # Coba lagi setelah download
+             cd "$BIN_DIR" || exit
+        fi
+
+        # Kosongkan log lama
         > "$LOG_CF"
 
-        # Update: Pastikan menggunakan logfile argument jika possible atau redirection yang benar
-        # Tambahkan output ke console jika redirection gagal, tapi redirection standar should work.
-        # Check permissions log file
+        # Pastikan permission log file benar
         touch "$LOG_CF"
         chmod 644 "$LOG_CF"
 
+        # Jalankan
         nohup ./cloudflared tunnel run --token "$TOKEN" > "$LOG_CF" 2>&1 &
         echo $! > "$PID_CF"
 
-        # Tunggu sebentar dan cek log untuk error umum
+        # Tunggu sebentar dan cek log
         sleep 5
 
         # Debugging: Cek apakah file log terisi
         if [ ! -s "$LOG_CF" ]; then
             echo -e "${RED}[!] Log Cloudflared kosong. Kemungkinan masalah permission atau binary crash.${NC}"
-            # Coba jalankan sebentar tanpa background untuk capture error jika log kosong
-            echo -e "${YELLOW}[*] Mencoba menjalankan diagnostik singkat...${NC}"
-            timeout 5s ./cloudflared tunnel run --token "$TOKEN" 2>&1 | head -n 5
+            echo -e "${YELLOW}[*] Mencoba menjalankan diagnostik (Direct Output):${NC}"
+            echo -e "${CYAN}------------------------------------------------${NC}"
+            # Jalankan foreground untuk lihat output langsung
+            ./cloudflared tunnel run --token "$TOKEN" &
+            CF_TEST_PID=$!
+            sleep 5
+            kill $CF_TEST_PID 2>/dev/null
+            echo -e "${CYAN}------------------------------------------------${NC}"
         fi
 
         if grep -q "Cannot determine default configuration path" "$LOG_CF"; then
